@@ -64,7 +64,7 @@ function renderTasks() {
         const val = commentInput.value.trim();
         if(val!==""){
           if(!task.comments) task.comments=[];
-          task.comments.push({text: val, date:new Date().toISOString()});
+          task.comments.push({text: val, date: new Date().toISOString()});
           localStorage.setItem("tasks", JSON.stringify(tasks));
           commentInput.value="";
           renderTasks();
@@ -89,14 +89,14 @@ function renderTasks() {
 addBtn.addEventListener("click", ()=>{
   const text = taskInput.value.trim();
   if(text!==""){
-    tasks.push({text, date:new Date().toISOString(), comments:[]});
+    tasks.push({text,date:new Date().toISOString(),comments:[]});
     localStorage.setItem("tasks", JSON.stringify(tasks));
     taskInput.value="";
     renderTasks();
   }
 });
 
-// --- Archiver ---
+// --- Archiver JSON ---
 archiveBtn.addEventListener("click", ()=>{
   if(tasks.length===0){ alert("Aucune tâche à archiver !"); return; }
   const blob = new Blob([JSON.stringify(tasks,null,2)], {type:"application/json"});
@@ -110,12 +110,13 @@ archiveBtn.addEventListener("click", ()=>{
   URL.revokeObjectURL(url);
 });
 
-// --- Nettoyer / Restaurer ---
+// --- Buttons nettoyages ---
 const buttonsRow = document.querySelector(".buttons-row");
+
 const clearBtn = document.createElement("button");
 clearBtn.textContent = "🧹 Tout nettoyer";
 clearBtn.addEventListener("click", ()=>{
-  if(confirm("Es-tu sûr ?")){
+  if(confirm("Es-tu sûr ? Cette action est irréversible !")){
     tasks = [];
     localStorage.removeItem("tasks");
     renderTasks();
@@ -132,7 +133,8 @@ restoreInput.accept=".json";
 restoreInput.style.display="none";
 restoreBtn.addEventListener("click", ()=> restoreInput.click());
 restoreInput.addEventListener("change", event=>{
-  Array.from(event.target.files).forEach(file=>{
+  const files = Array.from(event.target.files);
+  files.forEach(file=>{
     const reader = new FileReader();
     reader.onload = e=>{
       try{
@@ -142,14 +144,14 @@ restoreInput.addEventListener("change", event=>{
             if(item.text && item.date){
               if(!item.comments) item.comments=[];
               item.comments = item.comments.map(c=>typeof c==='string'?{text:c,date:new Date().toISOString()}:c);
-              tasks.push({text:item.text, date:item.date, comments:item.comments});
+              tasks.push({text:item.text,date:item.date,comments:item.comments});
             }
           });
           localStorage.setItem("tasks", JSON.stringify(tasks));
           renderTasks();
           alert("✅ JSON restauré !");
         }
-      }catch(err){ alert("❌ Impossible de lire le JSON"); }
+      }catch(err){ console.error(err); alert("❌ Impossible de lire le JSON"); }
     };
     reader.readAsText(file);
   });
@@ -163,42 +165,88 @@ const prompts = [
   {id:"prioriser", label:"Priorité", text:"Classe ces tâches par ordre de priorité et urgence :"},
   {id:"categoriser", label:"Catégories", text:"Range ces tâches dans des catégories logiques :"}
 ];
+
 prompts.forEach(p=>{
   const btn = document.createElement("button");
   btn.textContent = p.label;
   btn.addEventListener("click", ()=>{
     const combined = p.text + "\n\n" + tasks.map(t=>{
       let str = "- "+t.text;
-      if(t.comments?.length) str += "\n  Commentaires :\n" + t.comments.map(c=>`    - [${formatDate(c.date)}] ${c.text}`).join("\n");
+      if(t.comments?.length){
+        str += "\n  Commentaires :\n" + t.comments.map(c=>`    - [${formatDate(c.date)}] ${c.text}`).join("\n");
+      }
       return str;
     }).join("\n");
     navigator.clipboard.writeText(combined).then(()=>{
       copiedMsg.style.display="block";
       setTimeout(()=>copiedMsg.style.display="none",2000);
+      // ouvre le LLM sélectionné
       window.open(llmSelect.value, "_blank");
     });
   });
   promptsContainer.appendChild(btn);
 });
 
-// --- Coller & Télécharger JSON direct depuis presse-papier ---
+// --- Upload JSON additionnel ---
+uploadJson.addEventListener("change", event=>{
+  const files = Array.from(event.target.files);
+  files.forEach(file=>{
+    const reader = new FileReader();
+    reader.onload = e=>{
+      try{
+        const data = JSON.parse(e.target.result);
+        if(Array.isArray(data)){
+          data.forEach(item=>{
+            if(item.text && item.date){
+              if(!item.comments) item.comments=[];
+              item.comments = item.comments.map(c=>typeof c==='string'?{text:c,date:new Date().toISOString()}:c);
+              tasks.push({text:item.text,date:item.date,comments:item.comments});
+            }
+          });
+        }
+        else if(typeof data==="object"){
+          // fusion jalons
+          if(data.jalons) data.jalons.forEach(j=>tasks.push({text:j.titre,date:j.datePrévue||new Date().toISOString(),comments:[]}));
+          if(data.messages) data.messages.forEach(m=>tasks.push({text:`[Message] ${m.sujet} → ${m.destinataire}`,date:new Date().toISOString(),comments:[]}));
+          if(data.rdv) data.rdv.forEach(r=>tasks.push({text:`[RDV] ${r.titre} le ${r.date}`,date:new Date().toISOString(),comments:[]}));
+          if(data.livrables) data.livrables.forEach(l=>tasks.push({text:`[Livrable] ${l.titre} (${l.type})`,date:new Date().toISOString(),comments:[]}));
+        }
+        localStorage.setItem("tasks", JSON.stringify(tasks));
+        renderTasks();
+      }catch(err){ console.error("Erreur lecture JSON:",err); }
+    };
+    reader.readAsText(file);
+  });
+});
+
+// --- Paste + download JSON depuis presse-papier ---
 pasteDownloadBtn.addEventListener("click", async ()=>{
   try{
-    const raw = await navigator.clipboard.readText();
-    if(!raw){ alert("❌ Presse-papier vide !"); return; }
-    const parsed = JSON.parse(raw);
-    if(!Array.isArray(parsed)){ alert("❌ JSON invalide !"); return; }
+    let raw = await navigator.clipboard.readText();
+    raw = raw.trim();
+    if(raw.startsWith("```")) raw = raw.replace(/^```[\w]*|```$/g,"").trim();
+    const data = JSON.parse(raw);
 
-    parsed.forEach(item=>{
-      if(item.text && item.date){
-        if(!item.comments) item.comments=[];
-        item.comments = item.comments.map(c=>typeof c==='string'?{text:c,date:new Date().toISOString()}:c);
-        tasks.push({text:item.text, date:item.date, comments:item.comments});
-      }
-    });
+    if(Array.isArray(data)){
+      data.forEach(item=>{
+        if(item.text && item.date){
+          if(!item.comments) item.comments=[];
+          item.comments = item.comments.map(c=>typeof c==='string'?{text:c,date:new Date().toISOString()}:c);
+          tasks.push({text:item.text,date:item.date,comments:item.comments});
+        }
+      });
+    }
+    else if(typeof data==="object"){
+      if(data.jalons) data.jalons.forEach(j=>tasks.push({text:j.titre,date:j.datePrévue||new Date().toISOString(),comments:[]}));
+      if(data.messages) data.messages.forEach(m=>tasks.push({text:`[Message] ${m.sujet} → ${m.destinataire}`,date:new Date().toISOString(),comments:[]}));
+      if(data.rdv) data.rdv.forEach(r=>tasks.push({text:`[RDV] ${r.titre} le ${r.date}`,date:new Date().toISOString(),comments:[]}));
+      if(data.livrables) data.livrables.forEach(l=>tasks.push({text:`[Livrable] ${l.titre} (${l.type})`,date:new Date().toISOString(),comments:[]}));
+    }
+
     localStorage.setItem("tasks", JSON.stringify(tasks));
     renderTasks();
 
+    // téléchargement JSON
     const blob = new Blob([JSON.stringify(tasks,null,2)], {type:"application/json"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -209,8 +257,11 @@ pasteDownloadBtn.addEventListener("click", async ()=>{
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    alert("✅ JSON collé depuis le presse-papier et téléchargé !");
-  }catch(err){ alert("❌ Impossible de lire le presse-papier ou JSON invalide !"); console.error(err); }
+    alert("✅ JSON collé et téléchargé !");
+  }catch(err){
+    console.error(err);
+    alert("❌ JSON invalide ou presse-papier vide !");
+  }
 });
 
 // --- Initial render ---
